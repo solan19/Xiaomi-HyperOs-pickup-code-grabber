@@ -1,0 +1,99 @@
+name: Build signed release
+
+# fork 构建：产出「自签名」release APK 并挂到 Release 上。
+# 签名密钥首次由 CI 生成并保存到 keystore-store 这个 Release（请下载保管），
+# 之后每次构建自动复用，保证后续版本签名一致、可覆盖升级。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag（留空自动生成）'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 设置 Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: 安装编译所需 SDK 组件
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: 取回或生成签名密钥
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          mkdir -p .signing && cd .signing
+          if gh release download keystore-store -p pickup.keystore 2>/dev/null; then
+            echo "复用已有 keystore"
+          else
+            echo "生成新的 keystore"
+            keytool -genkeypair -v -keystore pickup.keystore -alias pickup \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass pickup123456 -keypass pickup123456 \
+              -dname "CN=Pickup Code Fork, OU=Eta, O=Eta, L=NA, ST=NA, C=CN"
+            gh release create keystore-store pickup.keystore \
+              --title "签名密钥（请下载保管）" \
+              --notes "本仓库后续版本使用的签名密钥，请下载保存。丢失后无法对已安装的版本做覆盖升级。" \
+              || gh release upload keystore-store pickup.keystore --clobber
+          fi
+          cd ..
+
+      - name: 构建未签名 release APK
+        run: ./gradlew :app:assembleRelease
+
+      - name: 签名
+        run: |
+          set -e
+          BT="$ANDROID_HOME/build-tools/34.0.0"
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          echo "unsigned: $APK"
+          "$BT/zipalign" -f 4 "$APK" aligned.apk
+          "$BT/apksigner" sign --ks .signing/pickup.keystore \
+            --ks-pass pass:pickup123456 --key-pass pass:pickup123456 \
+            --out pickup-code-grabber-release.apk aligned.apk
+          "$BT/apksigner" verify --print-certs pickup-code-grabber-release.apk
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-release-apk
+          path: pickup-code-grabber-release.apk
+
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -e
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then TAG="$REF_NAME"; fi
+          case "$TAG" in refs/*) TAG="" ;; esac
+          if [ -z "$TAG" ]; then TAG="v4.0.4-signed-$(date +%Y%m%d%H%M)"; fi
+          echo "release tag: $TAG"
+          gh release create "$TAG" pickup-code-grabber-release.apk \
+            --title "$TAG · signed release" \
+            --notes "fork 构建的自签名 release 包。上游项目：https://github.com/O-kai/Xiaomi-HyperOs-pickup-code-grabber" \
+            || gh release upload "$TAG" pickup-code-grabber-release.apk --clobber
+          echo "release done: $TAG"
