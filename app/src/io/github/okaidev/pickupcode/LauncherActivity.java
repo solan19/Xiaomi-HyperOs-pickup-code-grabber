@@ -945,7 +945,47 @@ public class LauncherActivity extends Activity {
             box.addView(moreCard, UiKit.cardLp(this, 12));
         }
 
+        // v4.0.5：拼多多取件身份码快捷入口（与「更多选项」同样的卡片观感）。
+        LinearLayout idCard = UiKit.card(this, P);
+        idCard.setBackground(UiKit.bg(P.accentSoft, this, 18));
+        LinearLayout idBtn = toolRow(R.drawable.ic_target, "拼多多取件身份码",
+                "点击通过 root 跳转拼多多身份码页",
+                v -> openPddIdCodeViaRoot());
+        idBtn.setPadding(dp(16), dp(13), dp(16), dp(13));
+        idCard.addView(idBtn);
+        box.addView(idCard, UiKit.cardLp(this, 12));
+
         return sv;
+    }
+
+    /**
+     * v4.0.5：通过 root 打开拼多多「取件身份码」页面。
+     *
+     * 用户要求用 root 跳转——用常驻 root 通道执行 {@code am start}，
+     * 以 root 身份对拼多多发起显式 intent（MainFrameActivity + 身份码 URI）。
+     * am 自带多 URI 语义，无需额外 flag 即可携带 data 启动。
+     */
+    private void openPddIdCodeViaRoot() {
+        final String pkg = "com.xunmeng.pinduoduo";
+        final String act = "com.xunmeng.pinduoduo.ui.activity.MainFrameActivity";
+        final String uri = "https://m.pinduoduo.net/mdkd/identificationCode";
+        // 用 am start 以 root 发起：显式组件 + 身份码 data
+        final String script =
+                "am start -n " + pkg + "/" + act
+                        + " -a android.intent.action.MAIN"
+                        + " -d '" + uri + "' 2>&1\n";
+        new Thread(() -> {
+            String out = RootShell.exec(script);
+            final String msg;
+            if (out != null && out.contains("Starting")) {
+                msg = "已跳转拼多多身份码";
+            } else if (out != null && out.toLowerCase().contains("not found")) {
+                msg = "未检测到拼多多，请先安装";
+            } else {
+                msg = "跳转失败" + (out != null ? "" : "（root 不可用）");
+            }
+            runOnUiThread(() -> Toast.makeText(this, msg, Toast.LENGTH_SHORT).show());
+        }, "pdd-idcode-jump").start();
     }
 
     /** 简洁模式 → 进阶模式：同一 Activity 重建，数据与当前 Tab 都不受影响。 */
